@@ -1,0 +1,126 @@
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: postgres-pvc
+  namespace: axion
+  labels:
+    app.kubernetes.io/name: postgres
+    app.kubernetes.io/part-of: axion-platform
+    environment: production
+spec:
+  accessModes:
+    - ReadWriteOnce
+  storageClassName: default
+  resources:
+    requests:
+      storage: 10Gi
+
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: postgres
+  namespace: axion
+  labels:
+    app.kubernetes.io/name: postgres
+    app.kubernetes.io/part-of: axion-platform
+    environment: production
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: postgres
+  template:
+    metadata:
+      labels:
+        app: postgres
+        app.kubernetes.io/name: postgres
+        app.kubernetes.io/part-of: axion-platform
+        environment: production
+    spec:
+      containers:
+        - name: postgres
+          image: postgres:17-alpine
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: postgres
+              containerPort: 5432
+          env:
+            - name: POSTGRES_USER
+              valueFrom:
+                secretKeyRef:
+                  name: axion-db-secret
+                  key: POSTGRES_USER
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: axion-db-secret
+                  key: POSTGRES_PASSWORD
+            - name: POSTGRES_DB
+              valueFrom:
+                secretKeyRef:
+                  name: axion-db-secret
+                  key: POSTGRES_DB
+            - name: PGDATA
+              value: /var/lib/postgresql/data/pgdata
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              cpu: 500m
+              memory: 1Gi
+          livenessProbe:
+            exec:
+              command:
+                - /bin/sh
+                - -c
+                - pg_isready -U $POSTGRES_USER -d $POSTGRES_DB
+            initialDelaySeconds: 20
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 5
+          readinessProbe:
+            exec:
+              command:
+                - /bin/sh
+                - -c
+                - pg_isready -U $POSTGRES_USER -d $POSTGRES_DB
+            initialDelaySeconds: 10
+            periodSeconds: 5
+            timeoutSeconds: 5
+            failureThreshold: 3
+          volumeMounts:
+            - name: postgres-storage
+              mountPath: /var/lib/postgresql/data
+            - name: postgres-initdb
+              mountPath: /docker-entrypoint-initdb.d
+      volumes:
+        - name: postgres-storage
+          persistentVolumeClaim:
+            claimName: postgres-pvc
+        - name: postgres-initdb
+          configMap:
+            name: axion-schema-config
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: postgres-service
+  namespace: axion
+  labels:
+    app.kubernetes.io/name: postgres
+    app.kubernetes.io/part-of: axion-platform
+    environment: production
+spec:
+  type: ClusterIP
+  selector:
+    app: postgres
+  ports:
+    - name: postgres
+      port: 5432
+      targetPort: 5432
+      protocol: TCP

@@ -1,0 +1,50 @@
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: axion-ingress
+  namespace: axion
+  labels:
+    app.kubernetes.io/part-of: axion-platform
+    environment: production
+  annotations:
+    kubernetes.io/ingress.class: nginx
+    cert-manager.io/cluster-issuer: letsencrypt-prod
+    nginx.ingress.kubernetes.io/ssl-redirect: "true"
+    nginx.ingress.kubernetes.io/proxy-body-size: "10m"
+spec:
+  ingressClassName: nginx
+  # Optional TLS block when cert-manager and domain are configured
+  # tls:
+  #   - hosts:
+  #       - app.axion.internal
+  #       - api.axion.internal
+  #     secretName: axion-tls-secret
+  rules:
+    - http:
+        paths:
+          # Frontend UI
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: axion-ui-service
+                port:
+                  number: 80
+
+          # Telemetry Query API dashboard endpoints
+          - path: /dashboard
+            pathType: Prefix
+            backend:
+              service:
+                name: telemetry-service
+                port:
+                  number: 8000
+
+          # Telemetry Query API device endpoints
+          - path: /devices
+            pathType: Prefix
+            backend:
+              service:
+                name: telemetry-service
+                port:
+                  number: 8000

@@ -1,0 +1,58 @@
+# =============================================================================
+# Reusable Template: Kubernetes Manifest Security & Misconfiguration Scanning
+# Tool: Aqua Security Trivy (Containerized - Zero Marketplace Extensions Required)
+# =============================================================================
+
+parameters:
+  - name: manifestDirectory
+    type: string
+    default: 'k8s-production'
+  - name: severityThreshold
+    type: string
+    default: 'HIGH,CRITICAL'
+
+steps:
+  # 1. Aqua Trivy IaC Scan (Runs via official Docker container, no extension needed)
+  - task: Docker@2
+    displayName: 'Aqua Trivy: Scan Kubernetes Manifests for Misconfigurations'
+    inputs:
+      command: 'run'
+      arguments: >-
+        --rm
+        -v $(System.DefaultWorkingDirectory):/workspace
+        -v $(Build.ArtifactStagingDirectory):/reports
+        aquasec/trivy:latest
+        config
+        --severity ${{ parameters.severityThreshold }}
+        --exit-code 0
+        --format table
+        /workspace/${{ parameters.manifestDirectory }}
+      workingDirectory: '$(System.DefaultWorkingDirectory)'
+
+  # 2. Generate JSON report for pipeline artifacts
+  - task: Docker@2
+    displayName: 'Aqua Trivy: Generate Manifest Audit Report'
+    continueOnError: true
+    inputs:
+      command: 'run'
+      arguments: >-
+        --rm
+        -v $(System.DefaultWorkingDirectory):/workspace
+        -v $(Build.ArtifactStagingDirectory):/reports
+        aquasec/trivy:latest
+        config
+        --severity ${{ parameters.severityThreshold }}
+        --exit-code 0
+        --format json
+        --output /reports/trivy-k8s-audit.json
+        /workspace/${{ parameters.manifestDirectory }}
+      workingDirectory: '$(System.DefaultWorkingDirectory)'
+
+  # 3. Publish report as pipeline artifact
+  - task: PublishPipelineArtifact@1
+    displayName: 'Publish Manifest Security Audit Report'
+    condition: always()
+    inputs:
+      targetPath: '$(Build.ArtifactStagingDirectory)'
+      artifact: 'Manifest-Security-Audit'
+      publishLocation: 'pipeline'

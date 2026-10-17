@@ -1,0 +1,255 @@
+# =============================================================================
+# Production CI/CD Pipeline - Axion Industrial IoT Monitoring Platform
+# Architecture: Multi-Stage Templated Pipeline with Security Scanning
+# Target Platform: Azure DevOps Pipelines -> Azure Container Registry & AKS
+# =============================================================================
+
+name: $(Date:yyyyMMdd)$(Rev:.r)
+
+trigger:
+  branches:
+    include:
+      - main
+  paths:
+    exclude:
+      - '**.md'
+      - '.gitignore'
+
+pr:
+  branches:
+    include:
+      - main
+
+pool:
+  vmImage: 'ubuntu-latest'
+
+variables:
+  # Registry & Cluster Configuration
+  - name: acrName
+    value: 'acrudayaksdemo'
+  - name: acrLoginServer
+    value: 'acrudayaksdemo.azurecr.io'
+  - name: dockerRegistryServiceConnection
+    value: 'acr-connection'          # Azure DevOps Service Connection for ACR
+  - name: azureSubscriptionConnection
+    value: 'aks-connection'          # ARM Service Connection (Type: azurerm)
+  - name: azureResourceGroup
+    value: 'rg-aks-Uday'
+  - name: kubernetesCluster
+    value: 'aks-demo-cluster'
+  - name: namespace
+    value: 'axion'
+  - name: imageTag
+    value: '$(Build.BuildId)'
+
+stages:
+  # ===========================================================================
+  # STAGE 1: Infrastructure as Code (IaC) & Manifest Security Audit
+  # ===========================================================================
+  - stage: SecurityScan_IaC
+    displayName: 'Stage 1: IaC Security & Misconfig Scan'
+    jobs:
+      - job: ScanKubernetesManifests
+        displayName: 'Audit Kubernetes Manifests (Trivy)'
+        steps:
+          - checkout: self
+          - template: templates/scan-manifests.yml
+            parameters:
+              manifestDirectory: 'k8s-production'
+              severityThreshold: 'HIGH,CRITICAL'
+
+  # ===========================================================================
+  # STAGE 2: Build, Container Security Scan & ACR Push (Templated CI)
+  # ===========================================================================
+  - stage: Build_Scan_Push_CI
+    displayName: 'Stage 2: Build, Scan & Push Images'
+    dependsOn: SecurityScan_IaC
+    jobs:
+      # Job 1: Ingestion Service
+      - job: BuildIngestion
+        displayName: 'Build & Scan: Ingestion Service'
+        steps:
+          - checkout: self
+          - template: templates/build-and-scan-image.yml
+            parameters:
+              serviceName: 'axion-ingestion'
+              imageName: 'axion-ingestion'
+              dockerfilePath: 'axion-ingestion-service/Dockerfile'
+              buildContext: 'axion-ingestion-service'
+              azureSubscriptionConnection: '$(azureSubscriptionConnection)'
+              acrName: '$(acrName)'
+              acrLoginServer: '$(acrLoginServer)'
+              imageTag: '$(imageTag)'
+              enableTrivyScan: true
+
+      # Job 2: Telemetry Query Service
+      - job: BuildTelemetryQuery
+        displayName: 'Build & Scan: Telemetry Query Service'
+        steps:
+          - checkout: self
+          - template: templates/build-and-scan-image.yml
+            parameters:
+              serviceName: 'axion-telemetry-query'
+              imageName: 'axion-telemetry-query'
+              dockerfilePath: 'axion-telemetry-query-service/Dockerfile'
+              buildContext: 'axion-telemetry-query-service'
+              azureSubscriptionConnection: '$(azureSubscriptionConnection)'
+              acrName: '$(acrName)'
+              acrLoginServer: '$(acrLoginServer)'
+              imageTag: '$(imageTag)'
+              enableTrivyScan: true
+
+      # Job 3: IoT Data Simulator
+      - job: BuildSimulator
+        displayName: 'Build & Scan: IoT Data Simulator'
+        steps:
+          - checkout: self
+          - template: templates/build-and-scan-image.yml
+            parameters:
+              serviceName: 'axion-simulator'
+              imageName: 'axion-simulator'
+              dockerfilePath: 'axion-data-simulator/Dockerfile'
+              buildContext: 'axion-data-simulator'
+              azureSubscriptionConnection: '$(azureSubscriptionConnection)'
+              acrName: '$(acrName)'
+              acrLoginServer: '$(acrLoginServer)'
+              imageTag: '$(imageTag)'
+              enableTrivyScan: true
+
+      # Job 4: React Web UI
+      - job: BuildUI
+        displayName: 'Build & Scan: Axion UI'
+        steps:
+          - checkout: self
+          - template: templates/build-and-scan-image.yml
+            parameters:
+              serviceName: 'axion-ui'
+              imageName: 'axion-ui'
+              dockerfilePath: 'axion-ui/Dockerfile'
+              buildContext: 'axion-ui'
+              azureSubscriptionConnection: '$(azureSubscriptionConnection)'
+              acrName: '$(acrName)'
+              acrLoginServer: '$(acrLoginServer)'
+              imageTag: '$(imageTag)'
+              enableTrivyScan: true
+
+  # ===========================================================================
+  # STAGE 3: Database & Migration Gate (Continuous Deployment - Phase 1)
+  # ===========================================================================
+  - stage: Deploy_Database_CD
+    displayName: 'Stage 3: Database Deployment & Migration'
+    dependsOn: Build_Scan_Push_CI
+    jobs:
+      - deployment: DeployDatabase
+        displayName: 'Deploy PostgreSQL & Run Migrations'
+        environment: 'production'
+        strategy:
+          runOnce:
+            deploy:
+              steps:
+                - checkout: self
+                
+                # Apply Namespace, Secrets & ConfigMaps
+                - task: KubernetesManifest@1
+                  displayName: 'Apply Namespace, Secrets & ConfigMaps'
+                  inputs:
+                    action: 'deploy'
+                    connectionType: 'azureResourceManager'
+                    azureSubscriptionConnection: '$(azureSubscriptionConnection)'
+                    azureResourceGroup: '$(azureResourceGroup)'
+                    kubernetesCluster: '$(kubernetesCluster)'
+                    namespace: '$(namespace)'
+                    manifests: |
+                      k8s-production/00-namespace.yaml
+                      k8s-production/01-secrets.yaml
+                      k8s-production/02-configmaps.yaml
+
+                # Deploy PostgreSQL with Persistent Storage
+                - task: KubernetesManifest@1
+                  displayName: 'Deploy PostgreSQL Stateful Workload'
+                  inputs:
+                    action: 'deploy'
+                    connectionType: 'azureResourceManager'
+                    azureSubscriptionConnection: '$(azureSubscriptionConnection)'
+                    azureResourceGroup: '$(azureResourceGroup)'
+                    kubernetesCluster: '$(kubernetesCluster)'
+                    namespace: '$(namespace)'
+                    manifests: |
+                      k8s-production/03-postgres.yaml
+
+                # Run Database Migration Job
+                - task: KubernetesManifest@1
+                  displayName: 'Run Schema Migration Job'
+                  inputs:
+                    action: 'deploy'
+                    connectionType: 'azureResourceManager'
+                    azureSubscriptionConnection: '$(azureSubscriptionConnection)'
+                    azureResourceGroup: '$(azureResourceGroup)'
+                    kubernetesCluster: '$(kubernetesCluster)'
+                    namespace: '$(namespace)'
+                    manifests: |
+                      k8s-production/04-db-migration-job.yaml
+
+  # ===========================================================================
+  # STAGE 4: Microservices & UI Rollout (Continuous Deployment - Phase 2)
+  # ===========================================================================
+  - stage: Deploy_Workloads_CD
+    displayName: 'Stage 4: Deploy Microservices & Web UI'
+    dependsOn: Deploy_Database_CD
+    jobs:
+      - deployment: DeployMicroservices
+        displayName: 'Deploy Workloads with Rollout Gates'
+        environment: 'production'
+        strategy:
+          runOnce:
+            deploy:
+              steps:
+                - checkout: self
+
+                # Deploy Ingestion Service with Image Substitution
+                - template: templates/deploy-workload.yml
+                  parameters:
+                    stepTitle: 'Deploy Ingestion Service'
+                    deploymentName: 'ingestion-service'
+                    azureSubscriptionConnection: '$(azureSubscriptionConnection)'
+                    azureResourceGroup: '$(azureResourceGroup)'
+                    kubernetesCluster: '$(kubernetesCluster)'
+                    namespace: '$(namespace)'
+                    manifests: 'k8s-production/05-ingestion-service.yaml'
+                    containers: '$(acrLoginServer)/axion-ingestion:$(imageTag)'
+
+                # Deploy Telemetry Query Service with Image Substitution
+                - template: templates/deploy-workload.yml
+                  parameters:
+                    stepTitle: 'Deploy Telemetry Query Service'
+                    deploymentName: 'telemetry-query-service'
+                    azureSubscriptionConnection: '$(azureSubscriptionConnection)'
+                    azureResourceGroup: '$(azureResourceGroup)'
+                    kubernetesCluster: '$(kubernetesCluster)'
+                    namespace: '$(namespace)'
+                    manifests: 'k8s-production/06-telemetry-query-service.yaml'
+                    containers: '$(acrLoginServer)/axion-telemetry-query:$(imageTag)'
+
+                # Deploy IoT Simulator
+                - template: templates/deploy-workload.yml
+                  parameters:
+                    stepTitle: 'Deploy IoT Telemetry Simulator'
+                    deploymentName: 'simulator-service'
+                    azureSubscriptionConnection: '$(azureSubscriptionConnection)'
+                    azureResourceGroup: '$(azureResourceGroup)'
+                    kubernetesCluster: '$(kubernetesCluster)'
+                    namespace: '$(namespace)'
+                    manifests: 'k8s-production/07-simulator.yaml'
+                    containers: '$(acrLoginServer)/axion-simulator:$(imageTag)'
+
+                # Deploy React Dashboard UI with Image Substitution
+                - template: templates/deploy-workload.yml
+                  parameters:
+                    stepTitle: 'Deploy Axion Web UI'
+                    deploymentName: 'axion-ui'
+                    azureSubscriptionConnection: '$(azureSubscriptionConnection)'
+                    azureResourceGroup: '$(azureResourceGroup)'
+                    kubernetesCluster: '$(kubernetesCluster)'
+                    namespace: '$(namespace)'
+                    manifests: 'k8s-production/08-ui.yaml'
+                    containers: '$(acrLoginServer)/axion-ui:$(imageTag)'

@@ -1,0 +1,159 @@
+# =============================================================================
+# Pipeline 2: CD (Continuous Deployment to AKS Cluster)
+# Description: Automatically triggered upon successful completion of the CI
+#              pipeline. Deploys database, runs schema migrations, and rolls out
+#              microservices with automated health gates.
+# =============================================================================
+
+name: CD-$(Date:yyyyMMdd)$(Rev:.r)
+
+# Triggered automatically after CI pipeline completes on main
+resources:
+  pipelines:
+    - pipeline: axion-ci
+      source: 'CI-Pipeline'       # Name of the registered CI pipeline in Azure DevOps
+      trigger:
+        branches:
+          include:
+            - main
+
+trigger: none                     # Disable direct git commit trigger (triggered by CI completion)
+
+pool:
+  vmImage: 'ubuntu-latest'
+
+variables:
+  - name: acrLoginServer
+    value: 'acrudayaksdemo.azurecr.io'
+  - name: azureSubscriptionConnection
+    value: 'aks-connection'       # ARM Service Connection (Type: azurerm)
+  - name: azureResourceGroup
+    value: 'rg-aks-Uday'
+  - name: kubernetesCluster
+    value: 'aks-demo-cluster'
+  - name: namespace
+    value: 'axion'
+  # Consumes the image tag produced by the triggering CI build, or falls back to latest
+  - name: imageTag
+    value: '$[ coalesce(resources.pipeline.axion-ci.runID, variables["Build.BuildId"]) ]'
+
+stages:
+  # ---------------------------------------------------------------------------
+  # STAGE 1: Database Deployment & Schema Migration Gate
+  # ---------------------------------------------------------------------------
+  - stage: Deploy_Database
+    displayName: 'Stage 1: Deploy Database & Run Migrations'
+    jobs:
+      - deployment: DeployDatabaseJob
+        displayName: 'Deploy PostgreSQL & Run Migrations'
+        environment: 'production'
+        strategy:
+          runOnce:
+            deploy:
+              steps:
+                - checkout: self
+                
+                # Apply Namespace, Secrets & ConfigMaps
+                - task: KubernetesManifest@1
+                  displayName: 'Apply Namespace, Secrets & ConfigMaps'
+                  inputs:
+                    action: 'deploy'
+                    connectionType: 'azureResourceManager'
+                    azureSubscriptionConnection: '$(azureSubscriptionConnection)'
+                    azureResourceGroup: '$(azureResourceGroup)'
+                    kubernetesCluster: '$(kubernetesCluster)'
+                    namespace: '$(namespace)'
+                    manifests: |
+                      k8s-production/00-namespace.yaml
+                      k8s-production/01-secrets.yaml
+                      k8s-production/02-configmaps.yaml
+
+                # Deploy PostgreSQL Stateful Workload (Azure Disk PVC)
+                - task: KubernetesManifest@1
+                  displayName: 'Deploy PostgreSQL with Persistent Storage'
+                  inputs:
+                    action: 'deploy'
+                    connectionType: 'azureResourceManager'
+                    azureSubscriptionConnection: '$(azureSubscriptionConnection)'
+                    azureResourceGroup: '$(azureResourceGroup)'
+                    kubernetesCluster: '$(kubernetesCluster)'
+                    namespace: '$(namespace)'
+                    manifests: |
+                      k8s-production/03-postgres.yaml
+
+                # Execute Schema Migration Job
+                - task: KubernetesManifest@1
+                  displayName: 'Execute Schema Migration Job'
+                  inputs:
+                    action: 'deploy'
+                    connectionType: 'azureResourceManager'
+                    azureSubscriptionConnection: '$(azureSubscriptionConnection)'
+                    azureResourceGroup: '$(azureResourceGroup)'
+                    kubernetesCluster: '$(kubernetesCluster)'
+                    namespace: '$(namespace)'
+                    manifests: |
+                      k8s-production/04-db-migration-job.yaml
+
+  # ---------------------------------------------------------------------------
+  # STAGE 2: Microservices & UI Rollout with Health Verification
+  # ---------------------------------------------------------------------------
+  - stage: Deploy_Workloads
+    displayName: 'Stage 2: Deploy Microservices & Web UI'
+    dependsOn: Deploy_Database
+    jobs:
+      - deployment: DeployMicroservicesJob
+        displayName: 'Deploy Workloads with Rollout Gates'
+        environment: 'production'
+        strategy:
+          runOnce:
+            deploy:
+              steps:
+                - checkout: self
+
+                # 1. Ingestion Service
+                - template: templates/deploy-workload.yml
+                  parameters:
+                    stepTitle: 'Deploy Ingestion Service'
+                    deploymentName: 'ingestion-service'
+                    azureSubscriptionConnection: '$(azureSubscriptionConnection)'
+                    azureResourceGroup: '$(azureResourceGroup)'
+                    kubernetesCluster: '$(kubernetesCluster)'
+                    namespace: '$(namespace)'
+                    manifests: 'k8s-production/05-ingestion-service.yaml'
+                    containers: '$(acrLoginServer)/axion-ingestion:$(imageTag)'
+
+                # 2. Telemetry Query Service
+                - template: templates/deploy-workload.yml
+                  parameters:
+                    stepTitle: 'Deploy Telemetry Query Service'
+                    deploymentName: 'telemetry-query-service'
+                    azureSubscriptionConnection: '$(azureSubscriptionConnection)'
+                    azureResourceGroup: '$(azureResourceGroup)'
+                    kubernetesCluster: '$(kubernetesCluster)'
+                    namespace: '$(namespace)'
+                    manifests: 'k8s-production/06-telemetry-query-service.yaml'
+                    containers: '$(acrLoginServer)/axion-telemetry-query:$(imageTag)'
+
+                # 3. IoT Simulator
+                - template: templates/deploy-workload.yml
+                  parameters:
+                    stepTitle: 'Deploy IoT Telemetry Simulator'
+                    deploymentName: 'simulator-service'
+                    azureSubscriptionConnection: '$(azureSubscriptionConnection)'
+                    azureResourceGroup: '$(azureResourceGroup)'
+                    kubernetesCluster: '$(kubernetesCluster)'
+                    namespace: '$(namespace)'
+                    manifests: 'k8s-production/07-simulator.yaml'
+                    containers: '$(acrLoginServer)/axion-simulator:$(imageTag)'
+
+                # 4. Axion React Web UI
+                - template: templates/deploy-workload.yml
+                  parameters:
+                    stepTitle: 'Deploy Axion Web UI'
+                    deploymentName: 'axion-ui'
+                    azureSubscriptionConnection: '$(azureSubscriptionConnection)'
+                    azureResourceGroup: '$(azureResourceGroup)'
+                    kubernetesCluster: '$(kubernetesCluster)'
+                    namespace: '$(namespace)'
+                    manifests: 'k8s-production/08-ui.yaml'
+                    containers: '$(acrLoginServer)/axion-ui:$(imageTag)'

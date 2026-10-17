@@ -1,0 +1,19 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: simlulator-service-deployment
+spec:
+  selector:
+    matchLabels:
+      app: simulator-service-pod
+  template:
+    metadata:
+      labels:
+        app: simulator-service-pod
+    spec:
+      containers:
+      - name: simulator-container
+        image: udaypsy/simulator:v1.0
+
+        ports:
+        - containerPort: 8000

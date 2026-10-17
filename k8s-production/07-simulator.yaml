@@ -1,0 +1,44 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: simulator-service
+  namespace: axion
+  labels:
+    app.kubernetes.io/name: simulator-service
+    app.kubernetes.io/part-of: axion-platform
+    environment: production
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: simulator-service
+  template:
+    metadata:
+      labels:
+        app: simulator-service
+        app.kubernetes.io/name: simulator-service
+        app.kubernetes.io/part-of: axion-platform
+        environment: production
+    spec:
+      containers:
+        - name: simulator
+          image: acrudayaksdemo.azurecr.io/axion-simulator:1.0.0
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: API_URL
+              valueFrom:
+                configMapKeyRef:
+                  name: axion-simulator-config
+                  key: API_URL
+            - name: INTERVAL_SECONDS
+              valueFrom:
+                configMapKeyRef:
+                  name: axion-simulator-config
+                  key: INTERVAL_SECONDS
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              cpu: 200m
+              memory: 256Mi

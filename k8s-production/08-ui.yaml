@@ -1,0 +1,85 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: axion-ui
+  namespace: axion
+  labels:
+    app.kubernetes.io/name: axion-ui
+    app.kubernetes.io/part-of: axion-platform
+    environment: production
+spec:
+  replicas: 2
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
+  selector:
+    matchLabels:
+      app: axion-ui
+  template:
+    metadata:
+      labels:
+        app: axion-ui
+        app.kubernetes.io/name: axion-ui
+        app.kubernetes.io/part-of: axion-platform
+        environment: production
+    spec:
+      containers:
+        - name: axion-ui
+          image: acrudayaksdemo.azurecr.io/axion-ui:1.0.0
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 80
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              cpu: 250m
+              memory: 256Mi
+          livenessProbe:
+            httpGet:
+              path: /
+              port: 80
+            initialDelaySeconds: 15
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 3
+          readinessProbe:
+            httpGet:
+              path: /
+              port: 80
+            initialDelaySeconds: 5
+            periodSeconds: 5
+            timeoutSeconds: 3
+            failureThreshold: 3
+          volumeMounts:
+            - name: ui-config-volume
+              mountPath: /usr/share/nginx/html/config.js
+              subPath: config.js
+      volumes:
+        - name: ui-config-volume
+          configMap:
+            name: axion-ui-config
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: axion-ui-service
+  namespace: axion
+  labels:
+    app.kubernetes.io/name: axion-ui
+    app.kubernetes.io/part-of: axion-platform
+    environment: production
+spec:
+  type: LoadBalancer
+  selector:
+    app: axion-ui
+  ports:
+    - name: http
+      port: 80
+      targetPort: 80
+      protocol: TCP

@@ -1,0 +1,88 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: telemetry-query-service
+  namespace: axion
+  labels:
+    app.kubernetes.io/name: telemetry-query-service
+    app.kubernetes.io/part-of: axion-platform
+    environment: production
+spec:
+  replicas: 2
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
+  selector:
+    matchLabels:
+      app: telemetry-query-service
+  template:
+    metadata:
+      labels:
+        app: telemetry-query-service
+        app.kubernetes.io/name: telemetry-query-service
+        app.kubernetes.io/part-of: axion-platform
+        environment: production
+    spec:
+      containers:
+        - name: telemetry-query-service
+          image: acrudayaksdemo.azurecr.io/axion-telemetry-query:1.0.0
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 8000
+          env:
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: axion-db-secret
+                  key: DATABASE_URL
+            - name: ALLOWED_ORIGINS
+              valueFrom:
+                configMapKeyRef:
+                  name: axion-common-config
+                  key: ALLOWED_ORIGINS
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8000
+            initialDelaySeconds: 15
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 3
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 8000
+            initialDelaySeconds: 10
+            periodSeconds: 5
+            timeoutSeconds: 3
+            failureThreshold: 3
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: telemetry-service
+  namespace: axion
+  labels:
+    app.kubernetes.io/name: telemetry-query-service
+    app.kubernetes.io/part-of: axion-platform
+    environment: production
+spec:
+  type: LoadBalancer
+  selector:
+    app: telemetry-query-service
+  ports:
+    - name: http
+      port: 8000
+      targetPort: 8000
+      protocol: TCP

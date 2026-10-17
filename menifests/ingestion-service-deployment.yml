@@ -1,0 +1,21 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ingestion-service-deployment
+spec:
+  selector:
+    matchLabels:
+      app: ingestion-service-pod
+  template:
+    metadata:
+      labels:
+        app: ingestion-service-pod
+    spec:
+      containers:
+      - name: ingestion-service
+        image: udaypsy/ingestion:v10
+
+        ports:
+        - containerPort: 8000
+
+    

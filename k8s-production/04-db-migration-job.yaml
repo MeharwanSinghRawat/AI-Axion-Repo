@@ -1,0 +1,82 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: axion-db-schema-init
+  namespace: axion
+  labels:
+    app.kubernetes.io/name: db-init
+    app.kubernetes.io/part-of: axion-platform
+    environment: production
+spec:
+  ttlSecondsAfterFinished: 600
+  backoffLimit: 5
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: db-init
+        app.kubernetes.io/part-of: axion-platform
+    spec:
+      restartPolicy: OnFailure
+      initContainers:
+        - name: wait-for-postgres
+          image: postgres:17-alpine
+          command:
+            - /bin/sh
+            - -c
+            - |
+              echo "Waiting for postgres-service:5432 to become reachable..."
+              until pg_isready -h postgres-service -p 5432 -U "$POSTGRES_USER" -d "$POSTGRES_DB"; do
+                echo "PostgreSQL is not ready yet. Retrying in 3 seconds..."
+                sleep 3
+              done
+              echo "PostgreSQL is ready!"
+          env:
+            - name: POSTGRES_USER
+              valueFrom:
+                secretKeyRef:
+                  name: axion-db-secret
+                  key: POSTGRES_USER
+            - name: POSTGRES_DB
+              valueFrom:
+                secretKeyRef:
+                  name: axion-db-secret
+                  key: POSTGRES_DB
+            - name: PGPASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: axion-db-secret
+                  key: POSTGRES_PASSWORD
+      containers:
+        - name: apply-schema
+          image: postgres:17-alpine
+          command:
+            - /bin/sh
+            - -c
+            - |
+              echo "Applying extensions and schema..."
+              psql -h postgres-service -U "$POSTGRES_USER" -d "$POSTGRES_DB" -f /sql/01-extensions.sql
+              psql -h postgres-service -U "$POSTGRES_USER" -d "$POSTGRES_DB" -f /sql/02-telemetry.sql
+              echo "Schema initialization completed successfully!"
+          env:
+            - name: POSTGRES_USER
+              valueFrom:
+                secretKeyRef:
+                  name: axion-db-secret
+                  key: POSTGRES_USER
+            - name: POSTGRES_DB
+              valueFrom:
+                secretKeyRef:
+                  name: axion-db-secret
+                  key: POSTGRES_DB
+            - name: PGPASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: axion-db-secret
+                  key: POSTGRES_PASSWORD
+          volumeMounts:
+            - name: schema-volume
+              mountPath: /sql
+      volumes:
+        - name: schema-volume
+          configMap:
+            name: axion-schema-config

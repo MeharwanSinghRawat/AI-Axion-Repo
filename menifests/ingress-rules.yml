@@ -1,0 +1,56 @@
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: axion-ingress
+  annotations:
+    kubernetes.io/ingress.class: azure/application-gateway
+spec:
+  ingressClassName: azure/application-gateway
+  rules:
+    - http:
+        paths:
+
+          # Axion UI
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: axion-ui-service
+                port:
+                  number: 80
+
+          # Ingestion API
+          - path: /ingestion
+            pathType: Prefix
+            backend:
+              service:
+                name: ingestion-service
+                port:
+                  number: 80
+
+          # Telemetry API
+          - path: /telemetry
+            pathType: Prefix
+            backend:
+              service:
+                name: telemetry-service
+                port:
+                  number: 8000
+
+          # PgAdmin
+          - path: /pgadmin
+            pathType: Prefix
+            backend:
+              service:
+                name: pgadmin-service
+                port:
+                  number: 80
+
+          # Simulator
+          - path: /simulator
+            pathType: Prefix
+            backend:
+              service:
+                name: simulator-service
+                port:
+                  number: 8000

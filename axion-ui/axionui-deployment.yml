@@ -1,0 +1,19 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: axion-ui-deployment
+spec:
+  selector:
+    matchLabels:
+      app: axion-ui-pod
+  template:
+    metadata:
+      labels:
+        app: axion-ui-pod
+    spec:
+      containers:
+      - name: axion-ui-container
+        image: udaypsy/axion-ui:v10
+
+        ports:
+        - containerPort: 80

@@ -1,0 +1,19 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: telemetry-query-service-deployment
+spec:
+  selector:
+    matchLabels:
+      app: telemetry-query-service-pod
+  template:
+    metadata:
+      labels:
+        app: telemetry-query-service-pod
+    spec:
+      containers:
+      - name: telemetry-container
+        image: udaypsy/telementry:v1.0
+
+        ports:
+        - containerPort: 8000

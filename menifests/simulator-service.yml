@@ -1,0 +1,10 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: simulator-service
+spec:
+  selector:
+    app: simulator-service-pod
+  ports:
+  - port: 8000
+    targetPort: 80

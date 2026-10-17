@@ -1,0 +1,138 @@
+# =============================================================================
+# Pipeline 1: CI (Continuous Integration & Security Scanning)
+# Description: Scans Kubernetes manifests, builds container images, runs Aqua
+#              Security Trivy vulnerability scans, and pushes verified images to ACR.
+# =============================================================================
+
+name: CI-$(Date:yyyyMMdd)$(Rev:.r)
+
+trigger:
+  branches:
+    include:
+      - main
+  paths:
+    exclude:
+      - '**.md'
+      - '.gitignore'
+
+pr:
+  branches:
+    include:
+      - main
+
+pool:
+  vmImage: 'ubuntu-latest'
+
+variables:
+  - name: acrName
+    value: 'acrudayaksdemo'
+  - name: acrLoginServer
+    value: 'acrudayaksdemo.azurecr.io'
+  - name: azureSubscriptionConnection
+    value: 'aks-connection'
+  - name: imageTag
+    value: '$(Build.BuildId)'
+
+stages:
+  # ---------------------------------------------------------------------------
+  # STAGE 1: Infrastructure as Code (IaC) & Manifest Security Audit
+  # ---------------------------------------------------------------------------
+  - stage: SecurityScan_IaC
+    displayName: 'Stage 1: IaC Manifest Audit (Trivy)'
+    jobs:
+      - job: AuditManifests
+        displayName: 'Scan Kubernetes Manifests'
+        steps:
+          - checkout: self
+          - template: templates/scan-manifests.yml
+            parameters:
+              manifestDirectory: 'k8s-production'
+              severityThreshold: 'HIGH,CRITICAL'
+
+  # ---------------------------------------------------------------------------
+  # STAGE 2: Build, Container Vulnerability Scan & ACR Push
+  # ---------------------------------------------------------------------------
+  - stage: Build_Scan_Push
+    displayName: 'Stage 2: Build, Scan & Push Images'
+    dependsOn: SecurityScan_IaC
+    jobs:
+      - job: BuildIngestion
+        displayName: 'Build & Scan: Ingestion Service'
+        steps:
+          - checkout: self
+          - template: templates/build-and-scan-image.yml
+            parameters:
+              serviceName: 'axion-ingestion'
+              imageName: 'axion-ingestion'
+              dockerfilePath: 'axion-ingestion-service/Dockerfile'
+              buildContext: 'axion-ingestion-service'
+              azureSubscriptionConnection: '$(azureSubscriptionConnection)'
+              acrName: '$(acrName)'
+              acrLoginServer: '$(acrLoginServer)'
+              imageTag: '$(imageTag)'
+              enableTrivyScan: true
+
+      - job: BuildTelemetryQuery
+        displayName: 'Build & Scan: Telemetry Query Service'
+        steps:
+          - checkout: self
+          - template: templates/build-and-scan-image.yml
+            parameters:
+              serviceName: 'axion-telemetry-query'
+              imageName: 'axion-telemetry-query'
+              dockerfilePath: 'axion-telemetry-query-service/Dockerfile'
+              buildContext: 'axion-telemetry-query-service'
+              azureSubscriptionConnection: '$(azureSubscriptionConnection)'
+              acrName: '$(acrName)'
+              acrLoginServer: '$(acrLoginServer)'
+              imageTag: '$(imageTag)'
+              enableTrivyScan: true
+
+      - job: BuildSimulator
+        displayName: 'Build & Scan: IoT Data Simulator'
+        steps:
+          - checkout: self
+          - template: templates/build-and-scan-image.yml
+            parameters:
+              serviceName: 'axion-simulator'
+              imageName: 'axion-simulator'
+              dockerfilePath: 'axion-data-simulator/Dockerfile'
+              buildContext: 'axion-data-simulator'
+              azureSubscriptionConnection: '$(azureSubscriptionConnection)'
+              acrName: '$(acrName)'
+              acrLoginServer: '$(acrLoginServer)'
+              imageTag: '$(imageTag)'
+              enableTrivyScan: true
+
+      - job: BuildUI
+        displayName: 'Build & Scan: Axion UI'
+        steps:
+          - checkout: self
+          - template: templates/build-and-scan-image.yml
+            parameters:
+              serviceName: 'axion-ui'
+              imageName: 'axion-ui'
+              dockerfilePath: 'axion-ui/Dockerfile'
+              buildContext: 'axion-ui'
+              azureSubscriptionConnection: '$(azureSubscriptionConnection)'
+              acrName: '$(acrName)'
+              acrLoginServer: '$(acrLoginServer)'
+              imageTag: '$(imageTag)'
+              enableTrivyScan: true
+
+      # Publish Kubernetes manifests for downstream CD pipeline consumption
+      - job: PublishManifestArtifacts
+        displayName: 'Publish Deployment Manifests'
+        dependsOn:
+          - BuildIngestion
+          - BuildTelemetryQuery
+          - BuildSimulator
+          - BuildUI
+        steps:
+          - checkout: self
+          - task: PublishPipelineArtifact@1
+            displayName: 'Publish k8s-production Manifests'
+            inputs:
+              targetPath: 'k8s-production'
+              artifact: 'k8s-manifests'
+              publishLocation: 'pipeline'

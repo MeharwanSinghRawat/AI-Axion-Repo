@@ -1,0 +1,8 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: axion
+  labels:
+    name: axion
+    environment: production
+    app.kubernetes.io/part-of: axion-platform

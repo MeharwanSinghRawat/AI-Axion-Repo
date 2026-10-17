@@ -1,0 +1,147 @@
+# =============================================================================
+# Reusable Template: Container Build, Security Scanning & ACR Push
+# Tool: Aqua Security Trivy (Containerized - Zero Marketplace Extensions Required)
+# Native Azure DevOps Tasks Used: Docker@2, PublishTestResults@2, PublishPipelineArtifact@1
+# =============================================================================
+
+parameters:
+  - name: serviceName
+    type: string
+  - name: dockerfilePath
+    type: string
+  - name: buildContext
+    type: string
+  - name: imageName
+    type: string
+  - name: azureSubscriptionConnection
+    type: string
+    default: 'aks-connection'
+  - name: acrName
+    type: string
+    default: 'acrudayaksdemo'
+  - name: acrLoginServer
+    type: string
+    default: 'acrudayaksdemo.azurecr.io'
+  - name: imageTag
+    type: string
+    default: '$(Build.BuildId)'
+  - name: severityThreshold
+    type: string
+    default: 'CRITICAL,HIGH'
+  - name: enableTrivyScan
+    type: boolean
+    default: true
+
+steps:
+  # ---------------------------------------------------------------------------
+  # 0. Authenticate Docker to ACR via Azure Subscription (ARM Connection)
+  # ---------------------------------------------------------------------------
+  - task: AzureCLI@2
+    displayName: 'Authenticate to ACR via Azure: ${{ parameters.acrName }}'
+    inputs:
+      azureSubscription: '${{ parameters.azureSubscriptionConnection }}'
+      scriptType: 'bash'
+      scriptLocation: 'inlineScript'
+      inlineScript: |
+        az acr login --name ${{ parameters.acrName }}
+
+  # ---------------------------------------------------------------------------
+  # 1. Docker Build
+  # ---------------------------------------------------------------------------
+  - task: Docker@2
+    displayName: 'Docker Build: ${{ parameters.serviceName }}'
+    inputs:
+      command: 'build'
+      repository: '${{ parameters.acrLoginServer }}/${{ parameters.imageName }}'
+      dockerfile: '${{ parameters.dockerfilePath }}'
+      buildContext: '${{ parameters.buildContext }}'
+      tags: |
+        ${{ parameters.imageTag }}
+        latest
+
+  # ---------------------------------------------------------------------------
+  # 2. Aqua Security Trivy Container Vulnerability Scan (Zero Extensions Needed)
+  # ---------------------------------------------------------------------------
+  - ${{ if eq(parameters.enableTrivyScan, true) }}:
+      # Table summary in build logs
+      - task: Docker@2
+        displayName: 'Aqua Trivy: Vulnerability Scan [${{ parameters.serviceName }}]'
+        continueOnError: true
+        inputs:
+          command: 'run'
+          arguments: >-
+            --rm
+            -v /var/run/docker.sock:/var/run/docker.sock
+            -v $(Build.ArtifactStagingDirectory):/reports
+            aquasec/trivy:latest
+            image
+            --severity ${{ parameters.severityThreshold }}
+            --format table
+            --exit-code 0
+            ${{ parameters.acrLoginServer }}/${{ parameters.imageName }}:${{ parameters.imageTag }}
+
+      # Generate JUnit XML report for Azure DevOps Test Tab integration
+      - task: Docker@2
+        displayName: 'Aqua Trivy: Generate JUnit Report [${{ parameters.serviceName }}]'
+        continueOnError: true
+        inputs:
+          command: 'run'
+          arguments: >-
+            --rm
+            -v /var/run/docker.sock:/var/run/docker.sock
+            -v $(Build.ArtifactStagingDirectory):/reports
+            aquasec/trivy:latest
+            image
+            --severity ${{ parameters.severityThreshold }}
+            --format template
+            --template "@/contrib/junit.tpl"
+            --output /reports/trivy-${{ parameters.serviceName }}-junit.xml
+            ${{ parameters.acrLoginServer }}/${{ parameters.imageName }}:${{ parameters.imageTag }}
+
+      # Publish test results to Azure DevOps "Tests" dashboard tab
+      - task: PublishTestResults@2
+        displayName: 'Publish Trivy Results to Tests Tab: ${{ parameters.serviceName }}'
+        condition: always()
+        inputs:
+          testResultsFormat: 'JUnit'
+          testResultsFiles: '$(Build.ArtifactStagingDirectory)/trivy-${{ parameters.serviceName }}-junit.xml'
+          testRunTitle: 'Aqua Trivy Scan: ${{ parameters.serviceName }}'
+
+      # Software Bill of Materials (SBOM) & License Scan
+      - task: Docker@2
+        displayName: 'Aqua Trivy: Generate SBOM / License Scan [${{ parameters.serviceName }}]'
+        continueOnError: true
+        inputs:
+          command: 'run'
+          arguments: >-
+            --rm
+            -v /var/run/docker.sock:/var/run/docker.sock
+            -v $(Build.ArtifactStagingDirectory):/reports
+            aquasec/trivy:latest
+            image
+            --format spdx-json
+            --output /reports/sbom-${{ parameters.serviceName }}.json
+            ${{ parameters.acrLoginServer }}/${{ parameters.imageName }}:${{ parameters.imageTag }}
+
+  # ---------------------------------------------------------------------------
+  # 3. Publish Scan & SBOM Reports as Pipeline Artifacts
+  # ---------------------------------------------------------------------------
+  - task: PublishPipelineArtifact@1
+    displayName: 'Publish Security & SBOM Artifacts [${{ parameters.serviceName }}]'
+    condition: always()
+    inputs:
+      targetPath: '$(Build.ArtifactStagingDirectory)'
+      artifact: 'Security-Reports-${{ parameters.serviceName }}'
+      publishLocation: 'pipeline'
+
+  # ---------------------------------------------------------------------------
+  # 4. Docker Push to Azure Container Registry
+  # ---------------------------------------------------------------------------
+  - task: Docker@2
+    displayName: 'Docker Push to ACR: ${{ parameters.serviceName }}'
+    inputs:
+      command: 'push'
+      repository: '${{ parameters.acrLoginServer }}/${{ parameters.imageName }}'
+      tags: |
+        ${{ parameters.imageTag }}
+        latest
